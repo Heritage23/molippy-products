@@ -1,10 +1,9 @@
-
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
-export default function PaymentCallbackPage() {
+function PaymentCallbackContent() {
   const searchParams = useSearchParams();
   const reference = searchParams.get("reference");
 
@@ -75,7 +74,7 @@ export default function PaymentCallbackPage() {
       }
     }
 
-    verifyPayment();
+    void verifyPayment();
 
     return () => {
       cancelled = true;
@@ -118,8 +117,8 @@ export default function PaymentCallbackPage() {
               {success
                 ? "Order confirmed"
                 : verifying
-                ? "One moment"
-                : "Payment update"}
+                  ? "One moment"
+                  : "Payment update"}
             </p>
 
             <h1 className="mt-4 font-serif text-4xl font-semibold tracking-[-0.04em] sm:text-5xl">
@@ -179,11 +178,10 @@ export default function PaymentCallbackPage() {
                     <p className="text-sm font-bold text-[#3d2932]">
                       What's next?
                     </p>
-
                     <p className="mt-1 text-xs leading-5 text-[#8d7580]">
-                      Your payment has been verified and your
-                      order confirmed. We'll prepare your Molippy
-                      products for delivery.
+                      Your payment has been verified and your order
+                      confirmed. We'll prepare your Molippy products for
+                      delivery.
                     </p>
                   </div>
                 </div>
@@ -195,12 +193,10 @@ export default function PaymentCallbackPage() {
                 <p className="text-sm font-semibold text-red-800">
                   Please don't pay again just yet.
                 </p>
-
                 <p className="mt-1 text-xs leading-5 text-red-600">
-                  This message does not necessarily mean your
-                  payment failed. If you were charged, retry
-                  verification or contact support before making
-                  another payment.
+                  This message does not necessarily mean your payment failed.
+                  If you were charged, retry verification or contact support
+                  before making another payment.
                 </p>
               </div>
             )}
@@ -215,7 +211,6 @@ export default function PaymentCallbackPage() {
                     Continue shopping
                     <span className="ml-2">→</span>
                   </a>
-
                   <a
                     href="/account"
                     className="inline-flex items-center justify-center rounded-full border border-[#ead8e1] bg-white px-8 py-3.5 text-sm font-bold text-[#4f3842] transition hover:border-[#e91e63] hover:text-[#e91e63]"
@@ -237,7 +232,6 @@ export default function PaymentCallbackPage() {
                         : "Try verification again"}
                     </button>
                   )}
-
                   <a
                     href="/products"
                     className="inline-flex items-center justify-center rounded-full border border-[#ead8e1] bg-white px-8 py-3.5 text-sm font-bold text-[#4f3842] transition hover:border-[#e91e63] hover:text-[#e91e63]"
@@ -252,7 +246,6 @@ export default function PaymentCallbackPage() {
               <p className="font-serif text-lg font-semibold text-[#e91e63]">
                 MOLIPPY PRODUCTS
               </p>
-
               <p className="mt-1 text-xs text-[#a08b94]">
                 Where beauty meets confidence. ♡
               </p>
@@ -261,5 +254,19 @@ export default function PaymentCallbackPage() {
         </div>
       </section>
     </main>
+  );
+}
+
+export default function PaymentCallbackPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="flex min-h-screen items-center justify-center bg-[#fff8fb] px-5 text-center text-[#806a75]">
+          Loading your payment status...
+        </main>
+      }
+    >
+      <PaymentCallbackContent />
+    </Suspense>
   );
 }
