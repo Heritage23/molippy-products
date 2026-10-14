@@ -1,10 +1,7 @@
 import { NextResponse } from "next/server";
-import { PrismaClient } from "@/app/generated/prisma/client";
+import { prisma } from "@/lib/prisma";
 import { comparePassword } from "@/lib/auth";
 import { createSession } from "@/lib/session";
-
-const prisma = new PrismaClient();
-
 export async function POST(request: Request) {
   try {
     const body = await request.json();

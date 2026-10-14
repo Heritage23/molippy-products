@@ -1,12 +1,8 @@
 
 import { NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { PrismaClient } from "@/app/generated/prisma/client";
-
+import { prisma } from "@/lib/prisma";
 export const runtime = "nodejs";
-
-const prisma = new PrismaClient();
-
 function isValidPaystackSignature(
   body: string,
   signature: string,

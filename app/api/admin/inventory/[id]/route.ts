@@ -1,10 +1,7 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { PrismaClient } from "@/app/generated/prisma/client";
+import { prisma } from "@/lib/prisma";
 import { verifySession } from "@/lib/session";
-
-const prisma = new PrismaClient();
-
 async function getAdminSession() {
   const cookieStore = await cookies();
   const sessionToken = cookieStore.get("session")?.value;
