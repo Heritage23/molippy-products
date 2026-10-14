@@ -814,12 +814,12 @@ export default function Home() {
                     <div className="relative overflow-hidden rounded-[30px] bg-white shadow-[0_12px_35px_rgba(116,17,63,0.06)] transition duration-500 group-hover:-translate-y-2 group-hover:shadow-[0_30px_65px_rgba(245,27,120,0.16)] sm:rounded-[36px]">
                       <div
                         className={`relative flex h-[285px] items-center justify-center overflow-hidden p-6 sm:h-[360px] sm:p-8 ${index === 0
-                            ? "bg-gradient-to-br from-[#ffd6e7] via-[#fff7fa] to-[#ffc2db]"
-                            : index === 1
-                              ? "bg-gradient-to-br from-[#ffe5f0] via-white to-[#ffbfd9]"
-                              : index === 2
-                                ? "bg-gradient-to-br from-[#ffe0e7] via-[#fff7f9] to-[#ffd0dd]"
-                                : "bg-gradient-to-br from-[#f7ddea] via-[#fff7fb] to-[#ffc8dd]"
+                          ? "bg-gradient-to-br from-[#ffd6e7] via-[#fff7fa] to-[#ffc2db]"
+                          : index === 1
+                            ? "bg-gradient-to-br from-[#ffe5f0] via-white to-[#ffbfd9]"
+                            : index === 2
+                              ? "bg-gradient-to-br from-[#ffe0e7] via-[#fff7f9] to-[#ffd0dd]"
+                              : "bg-gradient-to-br from-[#f7ddea] via-[#fff7fb] to-[#ffc8dd]"
                           }`}
                       >
                         <div className="absolute left-1/2 top-1/2 h-44 w-44 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/70 transition duration-700 group-hover:scale-110 sm:h-56 sm:w-56" />
@@ -900,11 +900,7 @@ export default function Home() {
                             </p>
 
                             <p className="mt-1 text-base font-black text-[#8d174d] sm:text-lg">
-
-                              ₦
-                              {product.price.toLocaleString("en-NG")}
-
-                              )
+                              ₦{(product.price / 100).toLocaleString("en-NG")}
                             </p>
                           </div>
 
