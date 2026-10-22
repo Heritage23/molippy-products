@@ -1,7 +1,31 @@
+
 "use client";
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+
+type GuestCartEntry = {
+  productId: string;
+  quantity: number;
+  product?: {
+    id: string;
+    name: string;
+    slug?: string;
+    price: number;
+    stock: number;
+    images: string[];
+  };
+};
+
+type DatabaseCartItem = {
+  id: string;
+  quantity: number;
+  product: {
+    id: string;
+  };
+};
+
+const GUEST_CART_KEY = "molippy_guest_cart";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -10,6 +34,195 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+
+  function getSafeDestination() {
+    const requestedPath = new URLSearchParams(
+      window.location.search
+    ).get("next");
+
+    return requestedPath &&
+      requestedPath.startsWith("/") &&
+      !requestedPath.startsWith("//") &&
+      !requestedPath.startsWith("/\\")
+      ? requestedPath
+      : "/";
+  }
+
+  function readGuestCart(): GuestCartEntry[] {
+    try {
+      const stored = localStorage.getItem(GUEST_CART_KEY);
+
+      if (!stored) return [];
+
+      const parsed: unknown = JSON.parse(stored);
+
+      if (!Array.isArray(parsed)) return [];
+
+      return parsed.filter(
+        (item): item is GuestCartEntry =>
+          item !== null &&
+          typeof item === "object" &&
+          typeof item.productId === "string" &&
+          typeof item.quantity === "number" &&
+          item.quantity > 0
+      );
+    } catch (error) {
+      console.error("Unable to read guest cart:", error);
+      return [];
+    }
+  }
+
+  function saveGuestCart(entries: GuestCartEntry[]) {
+    try {
+      if (entries.length === 0) {
+        localStorage.removeItem(GUEST_CART_KEY);
+      } else {
+        localStorage.setItem(GUEST_CART_KEY, JSON.stringify(entries));
+      }
+    } catch (error) {
+      console.error("Unable to save guest cart:", error);
+      throw new Error("Unable to update your saved bag.");
+    }
+  }
+
+  async function mergeGuestCart(): Promise<boolean> {
+    let guestEntries = readGuestCart();
+
+    if (guestEntries.length === 0) {
+      return true;
+    }
+
+    try {
+      // The login endpoint has already established the session cookie.
+      // Load the customer's database cart before merging guest items.
+      const cartResponse = await fetch("/api/cart", {
+        cache: "no-store",
+      });
+
+      if (!cartResponse.ok) {
+        throw new Error(
+          "Your account is signed in, but your saved bag could not be loaded."
+        );
+      }
+
+      const cartData = await cartResponse.json();
+
+      let databaseItems: DatabaseCartItem[] = cartData.items || [];
+
+      for (const entry of guestEntries) {
+        // Refresh the remaining entries in case the merge partially succeeds.
+        guestEntries = readGuestCart();
+
+        const currentEntry = guestEntries.find(
+          (item) => item.productId === entry.productId
+        );
+
+        if (!currentEntry) continue;
+
+        const existingItem = databaseItems.find(
+          (item) => item.product.id === currentEntry.productId
+        );
+
+        let mergeResponse: Response;
+
+        if (existingItem) {
+          // Update the existing database item to the combined quantity.
+          // PATCH sets an absolute quantity, so repeating it won't
+          // increment the same item again.
+          mergeResponse = await fetch("/api/cart", {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              itemId: existingItem.id,
+              quantity: existingItem.quantity + currentEntry.quantity,
+            }),
+          });
+        } else {
+          // Add a guest product that isn't already in the database cart.
+          mergeResponse = await fetch("/api/cart", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              productId: currentEntry.productId,
+              quantity: currentEntry.quantity,
+            }),
+          });
+        }
+
+        if (!mergeResponse.ok) {
+          const errorData = await mergeResponse.json().catch(() => ({}));
+
+          // If a request failed, check the database cart again.
+          // This helps recover if the server saved an item but the
+          // response was interrupted.
+          const refreshResponse = await fetch("/api/cart", {
+            cache: "no-store",
+          });
+
+          if (refreshResponse.ok) {
+            const refreshedData = await refreshResponse.json();
+            databaseItems = refreshedData.items || [];
+          }
+
+          const itemNowExists = databaseItems.some(
+            (item) => item.product.id === currentEntry.productId
+          );
+
+          if (itemNowExists && !existingItem) {
+            // Do not silently delete the guest entry on an uncertain
+            // result. Leave it available for the customer to review.
+            console.error(
+              "Could not confirm the guest cart merge:",
+              errorData.message
+            );
+          }
+
+          throw new Error(
+            errorData.message ||
+            "Some items could not be transferred. Your guest bag has been preserved."
+          );
+        }
+
+        // Remove only the successfully merged product from local storage.
+        // If another item fails, the remaining entries stay saved.
+        guestEntries = readGuestCart().filter(
+          (item) => item.productId !== currentEntry.productId
+        );
+
+        saveGuestCart(guestEntries);
+
+        // Refresh the database cart so subsequent items use current quantities.
+        const refreshResponse = await fetch("/api/cart", {
+          cache: "no-store",
+        });
+
+        if (!refreshResponse.ok) {
+          throw new Error(
+            "Your bag was partly transferred. Please retry to finish merging it."
+          );
+        }
+
+        const refreshedData = await refreshResponse.json();
+        databaseItems = refreshedData.items || [];
+      }
+
+      return readGuestCart().length === 0;
+    } catch (error) {
+      console.error("Guest cart merge failed:", error);
+
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "You are signed in, but we couldn't finish transferring your bag. Please try again."
+      );
+
+      return false;
+    }
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -42,21 +255,21 @@ export default function LoginPage() {
         return;
       }
 
-      // Read the page the customer originally wanted to visit.
-      const requestedPath = new URLSearchParams(
-        window.location.search
-      ).get("next");
+      const safeDestination = getSafeDestination();
 
-      // Allow only safe, internal paths to prevent external redirects.
-      const safeDestination =
-        requestedPath &&
-        requestedPath.startsWith("/") &&
-        !requestedPath.startsWith("//") &&
-        !requestedPath.startsWith("/\\")
-          ? requestedPath
-          : "/";
+      // Transfer the guest bag into the customer's database cart.
+      const merged = await mergeGuestCart();
 
-      setMessage(`Welcome back, ${data.user?.name || "customer"}! 🎉`);
+      if (!merged) {
+        // Keep the customer on this page so they can retry.
+        // Successfully transferred items have already been removed
+        // from local storage; remaining guest items are preserved.
+        return;
+      }
+
+      setMessage(
+        `Welcome back, ${data.user?.name || "customer"}! 🎉`
+      );
 
       window.setTimeout(() => {
         router.push(safeDestination);
@@ -72,7 +285,6 @@ export default function LoginPage() {
   return (
     <>
       <main className="login-page">
-        {/* LEFT BRAND PANEL */}
         <section className="brand-panel">
           <div className="brand-overlay" />
 
@@ -107,7 +319,6 @@ export default function LoginPage() {
             </div>
           </div>
 
-          {/* Decorative beauty shapes */}
           <div className="orb orb-one" />
           <div className="orb orb-two" />
 
@@ -123,7 +334,6 @@ export default function LoginPage() {
           <div className="sparkle sparkle-three">✦</div>
         </section>
 
-        {/* RIGHT LOGIN PANEL */}
         <section className="form-panel">
           <div className="mobile-logo">
             <a href="/" className="logo">
@@ -158,7 +368,6 @@ export default function LoginPage() {
               <div className="input-group">
                 <div className="password-label">
                   <label htmlFor="password">Password</label>
-
                   <span>Keep it cute & secure ✨</span>
                 </div>
 
@@ -175,11 +384,10 @@ export default function LoginPage() {
 
               {message && (
                 <div
-                  className={`message ${
-                    message.toLowerCase().includes("welcome")
+                  className={`message ${message.toLowerCase().includes("welcome")
                       ? "success"
                       : "error"
-                  }`}
+                    }`}
                   role="status"
                   aria-live="polite"
                 >
@@ -212,7 +420,15 @@ export default function LoginPage() {
 
             <p className="signup-text">
               New to Molippy?{" "}
-              <a href="/signup">Create your account</a>
+              <a
+                href="/signup"
+                onClick={(event) => {
+                  event.preventDefault();
+                  window.location.href = `/signup${window.location.search}`;
+                }}
+              >
+                Create your account
+              </a>
             </p>
 
             <a href="/" className="back-link">
@@ -246,24 +462,13 @@ export default function LoginPage() {
           font-family: Arial, Helvetica, sans-serif;
         }
 
-        /* BRAND PANEL */
-
         .brand-panel {
           position: relative;
           min-height: 100vh;
           overflow: hidden;
           background:
-            radial-gradient(
-              circle at 20% 20%,
-              rgba(255, 255, 255, 0.7),
-              transparent 28%
-            ),
-            linear-gradient(
-              145deg,
-              #c4115c 0%,
-              #b72a67 40%,
-              #f063a5 100%
-            );
+            radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.7), transparent 28%),
+            linear-gradient(145deg, #c4115c 0%, #b72a67 40%, #f063a5 100%);
           padding: 46px;
           color: white;
         }
@@ -272,16 +477,8 @@ export default function LoginPage() {
           position: absolute;
           inset: 0;
           background:
-            radial-gradient(
-              circle at 80% 75%,
-              rgba(255, 255, 255, 0.2),
-              transparent 25%
-            ),
-            radial-gradient(
-              circle at 50% 100%,
-              rgba(116, 17, 63, 0.15),
-              transparent 35%
-            );
+            radial-gradient(circle at 80% 75%, rgba(255, 255, 255, 0.2), transparent 25%),
+            radial-gradient(circle at 50% 100%, rgba(116, 17, 63, 0.15), transparent 35%);
           pointer-events: none;
         }
 
@@ -383,8 +580,6 @@ export default function LoginPage() {
           box-shadow: 0 0 15px white;
         }
 
-        /* DECORATIONS */
-
         .orb {
           position: absolute;
           border-radius: 50%;
@@ -426,12 +621,7 @@ export default function LoginPage() {
           height: 105px;
           margin: 0 auto;
           border-radius: 15px 15px 7px 7px;
-          background: linear-gradient(
-            90deg,
-            #c48da6,
-            #f8e2eb,
-            #c58da6
-          );
+          background: linear-gradient(90deg, #c48da6, #f8e2eb, #c58da6);
           box-shadow: inset 4px 0 5px rgba(255, 255, 255, 0.35);
         }
 
@@ -440,13 +630,7 @@ export default function LoginPage() {
           height: 170px;
           border-radius: 10px 10px 25px 25px;
           background:
-            linear-gradient(
-              90deg,
-              rgba(255, 255, 255, 0.2),
-              transparent 25%,
-              rgba(255, 255, 255, 0.25) 50%,
-              transparent 75%
-            ),
+            linear-gradient(90deg, rgba(255, 255, 255, 0.2), transparent 25%, rgba(255, 255, 255, 0.25) 50%, transparent 75%),
             linear-gradient(145deg, #fff0f6, #ed92b7);
           border: 2px solid rgba(255, 255, 255, 0.5);
           display: flex;
@@ -485,30 +669,24 @@ export default function LoginPage() {
         }
 
         @keyframes float {
-          0%,
-          100% {
+          0%, 100% {
             transform: translateY(0) rotate(17deg);
           }
-
           50% {
             transform: translateY(-16px) rotate(17deg);
           }
         }
 
         @keyframes sparkle {
-          0%,
-          100% {
+          0%, 100% {
             opacity: 0.4;
             transform: scale(0.8);
           }
-
           50% {
             opacity: 1;
             transform: scale(1.15);
           }
         }
-
-        /* FORM PANEL */
 
         .form-panel {
           min-height: 100vh;
@@ -593,10 +771,7 @@ export default function LoginPage() {
           outline: none;
           font-size: 14px;
           color: #35151f;
-          transition:
-            border-color 0.2s ease,
-            box-shadow 0.2s ease,
-            background 0.2s ease;
+          transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
         }
 
         .input-group input::placeholder {
@@ -644,10 +819,7 @@ export default function LoginPage() {
           align-items: center;
           justify-content: center;
           gap: 10px;
-          transition:
-            transform 0.2s ease,
-            box-shadow 0.2s ease,
-            background 0.2s ease;
+          transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
         }
 
         .login-button:hover:not(:disabled) {
@@ -747,8 +919,6 @@ export default function LoginPage() {
           color: #b7a5ad;
           font-size: 9px;
         }
-
-        /* RESPONSIVE */
 
         @media (max-width: 900px) {
           .login-page {

@@ -1,7 +1,153 @@
+
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+
+type GuestCartEntry = {
+  productId: string;
+  quantity: number;
+};
+
+type CartItem = {
+  id?: string;
+  itemId?: string;
+  productId?: string;
+  quantity: number;
+};
+
+const GUEST_CART_KEY = "molippy_guest_cart";
+
+function readGuestCart(): GuestCartEntry[] {
+  try {
+    const savedCart = localStorage.getItem(GUEST_CART_KEY);
+
+    if (!savedCart) return [];
+
+    const parsed: unknown = JSON.parse(savedCart);
+
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed.filter(
+      (item): item is GuestCartEntry =>
+        typeof item?.productId === "string" &&
+        item.productId.length > 0 &&
+        Number.isInteger(item.quantity) &&
+        item.quantity > 0
+    );
+  } catch (error) {
+    console.error("Unable to read guest cart:", error);
+    return [];
+  }
+}
+
+function saveGuestCart(cart: GuestCartEntry[]) {
+  try {
+    if (cart.length === 0) {
+      localStorage.removeItem(GUEST_CART_KEY);
+    } else {
+      localStorage.setItem(GUEST_CART_KEY, JSON.stringify(cart));
+    }
+  } catch (error) {
+    console.error("Unable to save guest cart:", error);
+    throw new Error("Unable to update your saved bag.");
+  }
+}
+
+async function getResponseMessage(response: Response) {
+  try {
+    const data = await response.json();
+    return data.message || "Unable to transfer your bag.";
+  } catch {
+    return "Unable to transfer your bag.";
+  }
+}
+
+/**
+ * Transfers guest items into the authenticated database cart.
+ * Each successfully transferred item is removed from localStorage.
+ * Items that fail to transfer remain saved in the guest cart.
+ */
+async function mergeGuestCart(): Promise<void> {
+  const guestItems = readGuestCart();
+
+  if (guestItems.length === 0) return;
+
+  for (const guestItem of guestItems) {
+    // Read the latest database cart before merging each item.
+    const cartResponse = await fetch("/api/cart", {
+      method: "GET",
+      cache: "no-store",
+    });
+
+    if (!cartResponse.ok) {
+      throw new Error(
+        cartResponse.status === 401
+          ? "Your session is not ready yet. Please try again."
+          : await getResponseMessage(cartResponse)
+      );
+    }
+
+    const cartData = await cartResponse.json();
+
+    const databaseItems: CartItem[] =
+      Array.isArray(cartData.items)
+        ? cartData.items
+        : Array.isArray(cartData.cart?.items)
+          ? cartData.cart.items
+          : [];
+
+    const existingItem = databaseItems.find(
+      (item) => item.productId === guestItem.productId
+    );
+
+    let mergeResponse: Response;
+
+    if (existingItem) {
+      const itemId = existingItem.id || existingItem.itemId;
+
+      if (!itemId) {
+        throw new Error(
+          "Your bag could not be synced. Your saved items are still on this device."
+        );
+      }
+
+      // Add the guest quantity to the existing account-cart quantity.
+      mergeResponse = await fetch("/api/cart", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          itemId,
+          quantity: existingItem.quantity + guestItem.quantity,
+        }),
+      });
+    } else {
+      mergeResponse = await fetch("/api/cart", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          productId: guestItem.productId,
+          quantity: guestItem.quantity,
+        }),
+      });
+    }
+
+    if (!mergeResponse.ok) {
+      throw new Error(await getResponseMessage(mergeResponse));
+    }
+
+    // Remove only the item that was successfully transferred.
+    const remainingItems = readGuestCart().filter(
+      (item) => item.productId !== guestItem.productId
+    );
+
+    saveGuestCart(remainingItems);
+  }
+}
 
 export default function SignupPage() {
   const router = useRouter();
@@ -13,6 +159,7 @@ export default function SignupPage() {
   const [messageType, setMessageType] = useState<"success" | "error">("error");
   const [loading, setLoading] = useState(false);
   const [nextPath, setNextPath] = useState("");
+  const [accountCreated, setAccountCreated] = useState(false);
 
   useEffect(() => {
     const requestedPath = new URLSearchParams(window.location.search).get("next");
@@ -26,6 +173,10 @@ export default function SignupPage() {
       setNextPath(requestedPath);
     }
   }, []);
+
+  function continueToStore() {
+    router.replace(nextPath || "/");
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -54,23 +205,62 @@ export default function SignupPage() {
         return;
       }
 
-      // The signup API now creates the login session automatically.
+      // The signup API creates the session automatically.
+      setAccountCreated(true);
+
       setMessageType("success");
-      setMessage("Welcome to Molippy! Your soft lip era starts now. ♡");
+      setMessage("Your account is ready! We're syncing your bag. ♡");
 
       setName("");
       setEmail("");
       setPassword("");
 
-      const destination = nextPath || "/";
+      try {
+        await mergeGuestCart();
 
-      window.setTimeout(() => {
-        router.replace(destination);
-      }, 900);
+        setMessage("Welcome to Molippy! Your bag is ready. ♡");
+
+        window.setTimeout(() => {
+          router.replace(nextPath || "/");
+        }, 900);
+      } catch (mergeError) {
+        console.error("Guest cart transfer error:", mergeError);
+
+        setMessageType("error");
+        setMessage(
+          "Your account was created, but we couldn't finish syncing your bag. Your remaining guest items are still saved on this device. Please retry the transfer below."
+        );
+      }
     } catch (error) {
       console.error("Signup error:", error);
       setMessageType("error");
       setMessage("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleRetryTransfer() {
+    setLoading(true);
+    setMessage("");
+
+    try {
+      await mergeGuestCart();
+
+      setMessageType("success");
+      setMessage("Your bag has been synced successfully. ♡");
+
+      window.setTimeout(() => {
+        router.replace(nextPath || "/");
+      }, 700);
+    } catch (error) {
+      console.error("Guest cart retry error:", error);
+      setMessageType("error");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "We couldn't sync your bag. Please try again."
+      );
     } finally {
       setLoading(false);
     }
@@ -108,7 +298,10 @@ export default function SignupPage() {
             </div>
           </div>
 
-          <div className="product-art" aria-label="Illustration of pink lip-care products">
+          <div
+            className="product-art"
+            aria-label="Illustration of pink lip-care products"
+          >
             <div className="art-sparkle sparkle-one">✦</div>
             <div className="art-sparkle sparkle-two">✧</div>
             <div className="art-sparkle sparkle-three">♡</div>
@@ -161,9 +354,13 @@ export default function SignupPage() {
 
           <div className="form-content">
             <div className="form-heading">
-              <span className="welcome-label">A LITTLE SELF-CARE STARTS HERE</span>
+              <span className="welcome-label">
+                A LITTLE SELF-CARE STARTS HERE
+              </span>
 
-              <h2>Create your account<span>.</span></h2>
+              <h2>
+                Create your account<span>.</span>
+              </h2>
 
               <p>
                 Join the Molippy girl community and make every lip-care moment
@@ -184,6 +381,7 @@ export default function SignupPage() {
                   minLength={2}
                   maxLength={80}
                   required
+                  disabled={accountCreated || loading}
                 />
               </div>
 
@@ -197,6 +395,7 @@ export default function SignupPage() {
                   placeholder="you@example.com"
                   autoComplete="email"
                   required
+                  disabled={accountCreated || loading}
                 />
               </div>
 
@@ -211,24 +410,49 @@ export default function SignupPage() {
                   autoComplete="new-password"
                   minLength={6}
                   required
+                  disabled={accountCreated || loading}
                 />
                 <span className="field-hint">
                   Choose a password with at least 6 characters.
                 </span>
               </div>
 
-              <button type="submit" className="signup-button" disabled={loading}>
-                {loading ? (
-                  <>
-                    <span className="loading-dot" />
-                    Creating your account...
-                  </>
-                ) : (
-                  <>
-                    Create my account <span>♡</span>
-                  </>
-                )}
-              </button>
+              {!accountCreated ? (
+                <button
+                  type="submit"
+                  className="signup-button"
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <>
+                      <span className="loading-dot" />
+                      Creating your account...
+                    </>
+                  ) : (
+                    <>
+                      Create my account <span>♡</span>
+                    </>
+                  )}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="signup-button"
+                  onClick={handleRetryTransfer}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <>
+                      <span className="loading-dot" />
+                      Syncing your bag...
+                    </>
+                  ) : (
+                    <>
+                      Retry bag transfer <span>♡</span>
+                    </>
+                  )}
+                </button>
+              )}
 
               {message && (
                 <p
@@ -238,6 +462,16 @@ export default function SignupPage() {
                 >
                   {message}
                 </p>
+              )}
+
+              {accountCreated && (
+                <button
+                  type="button"
+                  className="continue-button"
+                  onClick={continueToStore}
+                >
+                  Continue to the store
+                </button>
               )}
             </form>
 
@@ -684,6 +918,19 @@ export default function SignupPage() {
         .form-message.error {
           background: #fff0f2;
           color: #b43850;
+        }
+
+        .continue-button {
+          display: block;
+          margin: 12px auto 0;
+          padding: 8px 12px;
+          border: 0;
+          background: transparent;
+          color: #b94578;
+          cursor: pointer;
+          font-size: 11px;
+          font-weight: 700;
+          text-decoration: underline;
         }
 
         .form-divider {

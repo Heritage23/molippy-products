@@ -1,7 +1,8 @@
+
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 
 type Product = {
   id: string;
@@ -30,8 +31,14 @@ type Review = {
   };
 };
 
+type GuestCartItem = {
+  productId: string;
+  quantity: number;
+};
+
+const GUEST_CART_KEY = "molippy_guest_cart";
+
 export default function ProductDetailsPage() {
-  const router = useRouter();
   const params = useParams<{ slug: string }>();
   const slug = params.slug;
 
@@ -56,12 +63,8 @@ export default function ProductDetailsPage() {
   const [currentUserName, setCurrentUserName] = useState<string | null>(null);
   const [userLoading, setUserLoading] = useState(true);
 
-  function redirectToLogin() {
-    const destination = `/products/${slug}`;
-    router.replace(`/login?next=${encodeURIComponent(destination)}`);
-  }
-
-  // Check authentication before loading the product.
+  // Read the current customer if logged in.
+  // Guests are allowed to continue browsing.
   useEffect(() => {
     let cancelled = false;
 
@@ -72,31 +75,18 @@ export default function ProductDetailsPage() {
         });
 
         if (!response.ok) {
-          if (!cancelled) {
-            redirectToLogin();
-          }
           return;
         }
 
         const data = await response.json();
 
-        if (!data.user?.id) {
-          if (!cancelled) {
-            redirectToLogin();
-          }
-          return;
-        }
-
-        if (!cancelled) {
+        if (!cancelled && data.user?.id) {
           setCurrentUserId(data.user.id);
           setCurrentUserName(data.user.name || null);
         }
       } catch (error) {
-        console.error("User authentication error:", error);
-
-        if (!cancelled) {
-          redirectToLogin();
-        }
+        // Authentication is optional for browsing.
+        console.error("Optional authentication check failed:", error);
       } finally {
         if (!cancelled) {
           setUserLoading(false);
@@ -109,9 +99,9 @@ export default function ProductDetailsPage() {
     return () => {
       cancelled = true;
     };
-  }, [router, slug]);
+  }, []);
 
-  // Load product details only after the user is authenticated.
+  // Load product details whether the visitor is logged in or not.
   useEffect(() => {
     let cancelled = false;
 
@@ -155,16 +145,16 @@ export default function ProductDetailsPage() {
       }
     }
 
-    if (!userLoading && currentUserId && slug) {
+    if (!userLoading && slug) {
       loadProduct();
     }
 
     return () => {
       cancelled = true;
     };
-  }, [slug, userLoading, currentUserId]);
+  }, [slug, userLoading]);
 
-  // Load customer reviews.
+  // Reviews are public, so load them for guests too.
   useEffect(() => {
     let cancelled = false;
 
@@ -181,13 +171,6 @@ export default function ProductDetailsPage() {
         );
 
         const data = await response.json();
-
-        if (response.status === 401) {
-          if (!cancelled) {
-            redirectToLogin();
-          }
-          return;
-        }
 
         if (!response.ok) {
           if (!cancelled) {
@@ -214,14 +197,63 @@ export default function ProductDetailsPage() {
       }
     }
 
-    if (product?.id && currentUserId) {
+    if (product?.id) {
       loadReviews(product.id);
     }
 
     return () => {
       cancelled = true;
     };
-  }, [product?.id, currentUserId, router, slug]);
+  }, [product?.id]);
+
+  // Save guest selections locally until they sign in.
+  function addToGuestCart(productId: string, amount: number) {
+    try {
+      const savedCart = localStorage.getItem(GUEST_CART_KEY);
+      let guestCart: GuestCartItem[] = [];
+
+      if (savedCart) {
+        try {
+          const parsed: unknown = JSON.parse(savedCart);
+
+          if (Array.isArray(parsed)) {
+            guestCart = parsed.filter(
+              (item): item is GuestCartItem =>
+                item !== null &&
+                typeof item === "object" &&
+                typeof item.productId === "string" &&
+                Number.isInteger(item.quantity) &&
+                item.quantity > 0
+            );
+          }
+        } catch {
+          guestCart = [];
+        }
+      }
+
+      const existingItem = guestCart.find(
+        (item) => item.productId === productId
+      );
+
+      if (existingItem) {
+        existingItem.quantity = Math.min(
+          existingItem.quantity + amount,
+          product?.stock ?? amount
+        );
+      } else {
+        guestCart.push({
+          productId,
+          quantity: Math.min(amount, product?.stock ?? amount),
+        });
+      }
+
+      localStorage.setItem(GUEST_CART_KEY, JSON.stringify(guestCart));
+      setMessage("Added to your Molippy bag ♡");
+    } catch (error) {
+      console.error("Guest cart storage error:", error);
+      setMessage("Unable to save your bag. Please check your browser settings.");
+    }
+  }
 
   async function addToCart() {
     if (!product || product.stock <= 0 || addingToCart) {
@@ -231,6 +263,12 @@ export default function ProductDetailsPage() {
     try {
       setAddingToCart(true);
       setMessage("");
+
+      // Guests can shop without creating an account.
+      if (!currentUserId) {
+        addToGuestCart(product.id, quantity);
+        return;
+      }
 
       const response = await fetch("/api/cart", {
         method: "POST",
@@ -246,8 +284,11 @@ export default function ProductDetailsPage() {
 
       const data = await response.json();
 
+      // If the session has expired, keep the selection as a guest item.
       if (response.status === 401) {
-        redirectToLogin();
+        setCurrentUserId(null);
+        setCurrentUserName(null);
+        addToGuestCart(product.id, quantity);
         return;
       }
 
@@ -273,7 +314,7 @@ export default function ProductDetailsPage() {
     setReviewMessage("");
 
     if (!currentUserId) {
-      redirectToLogin();
+      setReviewMessage("Please log in to leave a review.");
       return;
     }
 
@@ -311,7 +352,9 @@ export default function ProductDetailsPage() {
       const data = await response.json();
 
       if (response.status === 401) {
-        redirectToLogin();
+        setCurrentUserId(null);
+        setCurrentUserName(null);
+        setReviewMessage("Your session has expired. Please log in again.");
         return;
       }
 
@@ -323,7 +366,9 @@ export default function ProductDetailsPage() {
       const newReview: Review = data.review;
 
       if (!newReview) {
-        setReviewMessage("Your review could not be confirmed. Please refresh and try again.");
+        setReviewMessage(
+          "Your review could not be confirmed. Please refresh and try again."
+        );
         return;
       }
 
@@ -371,7 +416,9 @@ export default function ProductDetailsPage() {
       const data = await response.json();
 
       if (response.status === 401) {
-        redirectToLogin();
+        setCurrentUserId(null);
+        setCurrentUserName(null);
+        setReviewMessage("Your session has expired. Please log in again.");
         return;
       }
 
@@ -386,8 +433,7 @@ export default function ProductDetailsPage() {
 
       if (deletedReview && newCount > 0) {
         newAverage =
-          (averageRating * reviewCount - deletedReview.rating) /
-          newCount;
+          (averageRating * reviewCount - deletedReview.rating) / newCount;
       }
 
       setReviews((current) =>
@@ -443,7 +489,7 @@ export default function ProductDetailsPage() {
     );
   }
 
-  // Show a loading screen while checking authentication or loading the product.
+  // Product loading no longer depends on the visitor being logged in.
   if (userLoading || loading) {
     return (
       <main className="min-h-screen bg-[#fff8fb] px-4 py-7 sm:px-8 sm:py-10">
